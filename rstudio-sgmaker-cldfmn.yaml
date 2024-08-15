@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-  Aws infrastructure for bioinformatics research work. 
-  Omics is used as the workflow manager for bioinformatics primary & secondary analysis. 
-  This template provides an Ec2 instance with R-studio server for interactive R analysis while 
-  Sagemaker is used for interfacing with Python AI tools & hugging face model. 
+  Aws infrastructure for bioinformatics research work.
+  Omics is used as the workflow manager for bioinformatics primary & secondary analysis.
+  This template provides an Ec2 instance with R-studio server for interactive R analysis while
+  Sagemaker is used for interfacing with Python AI tools & hugging face model.
   GenAI capabilities are provided by Bedrock.
   The list of R packages installed for bioinformatics analysis:
     Generic single cell analysis:
@@ -16,14 +16,16 @@ Description: >
     Bulk RNA-seq analysis:
       - DESeq2
       - limma
-    - ineq 
+    - ineq
     Core bioconductor annotation packages (hg38)
-      - TxDb 
+      - TxDb
       - Org.hs
       - GO
     - tidyverse & miscellaneous packages
     - paws
-  Written by - Jeremy Ng (Contact at jeremy.ng.w.k@sgh.com.sg/jeremy.ng.wk@duke-nus.edu.sg) 
+    - maftools
+
+  Written by - Jeremy Ng (Contact at jeremy.ng.w.k@sgh.com.sg/jeremy.ng.wk@duke-nus.edu.sg)
   in consultation with Eugene Ng (contact at eugenelq@amazon.com).
 
 Parameters:
@@ -61,8 +63,8 @@ Parameters:
     Default: 180
     Type: Number
   LatestAmiId:
-    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
-    Default: '/aws/service/canonical/ubuntu/server/jammy/stable/current/amd64/hvm/ebs-gp2/ami-id'
+    Type: String
+    Default: 'ami-0ac55f2a58f397c92'
   InstanceType:
     Type: String
     Default: t2.micro
@@ -788,7 +790,7 @@ Resources:
           wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/r-project.gpg
           echo "deb [signed-by=/usr/share/keyrings/r-project.gpg] https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/" | sudo tee -a /etc/apt/sources.list.d/r-project.list
           sudo apt update &&
-          sudo apt install unzip r-base-core gdebi-core curl libcurl4-openssl-dev libfontconfig1-dev libxml2-dev libharfbuzz-dev libfribidi-dev  libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev libgeos-dev  libudunits2-dev -y
+          sudo apt install unzip r-base-core gdebi-core curl libcurl4-openssl-dev libfontconfig1-dev libxml2-dev libharfbuzz-dev libfribidi-dev  libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev libgeos-dev  libudunits2-dev cmake libgdal-dev -y
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
           unzip awscliv2.zip
           sudo ./aws/install
