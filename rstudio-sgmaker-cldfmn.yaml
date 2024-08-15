@@ -1,0 +1,935 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Aws infrastructure for bioinformatics research work. 
+  Omics is used as the workflow manager for bioinformatics primary & secondary analysis. 
+  This template provides an Ec2 instance with R-studio server for interactive R analysis while 
+  Sagemaker is used for interfacing with Python AI tools & hugging face model. 
+  GenAI capabilities are provided by Bedrock.
+  The list of R packages installed for bioinformatics analysis:
+    Generic single cell analysis:
+    - Seurat
+    - slingshot
+    - Monocle3
+    Functional Analysis:
+      - clusterProfiler
+      - GSVA
+    Bulk RNA-seq analysis:
+      - DESeq2
+      - limma
+    - ineq 
+    Core bioconductor annotation packages (hg38)
+      - TxDb 
+      - Org.hs
+      - GO
+    - tidyverse & miscellaneous packages
+    - paws
+  Written by - Jeremy Ng (Contact at jeremy.ng.w.k@sgh.com.sg/jeremy.ng.wk@duke-nus.edu.sg) 
+  in consultation with Eugene Ng (contact at eugenelq@amazon.com).
+
+Parameters:
+  EbsVolumeSize:
+    Description: Size of the EBS volume in GB
+    Type: Number
+    Default: 20
+  EC2InstanceTag:
+    Description: Name of the EC2 instance
+    Type: String
+    Default: RStudio-dev
+  InputBucketName:
+    Description: >
+      Name of input bucket for Omics workflows.
+      Files here will not be archived and deleted after $DaysToExpire
+    Default: !Sub "{AWS::Region}-geo-inputs"
+    Type: String
+  OutputBucketName:
+    Description: >
+      Name of output bucket to store results from analysis.
+      Files will be archived after $DaysToArchive following transition to
+      STANDARD_IA after $DaysToTransition
+    Default: !Sub "{AWS::Region}-analysis-outputs"
+    Type: String
+  DaysToExpire:
+    Description: Number of days files in input bucket should be stored before deletion
+    Default: 60
+    Type: Number
+  DaysToTransition:
+    Description: Number of days files in output bucket should be transitioned to STANDARD_IR
+    Default: 60
+    Type: Number
+  DaysToArchive:
+    Description: Number of days STANDARD_IR files should be transitioned to GLACIER_IR
+    Default: 180
+    Type: Number
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/canonical/ubuntu/server/jammy/stable/current/amd64/hvm/ebs-gp2/ami-id'
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - r6g.2xlarge
+      - r6g.4xlarge
+      - r6g.8xlarge
+      - r6g.16xlarge
+      - r8g.48xlarge
+  SshKeyPairName:
+    Description: >
+      Name of EC2 keypair to enable SSH access. This will need to be obtained from the CLI as follows:
+      https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/create-key-pairs.html#create-key-pair-cloudformation
+    Type: String
+    Default: !Sub "{AWS::Region}-{AWS::AccountId}-{AWS::StackId}-key"
+  NotificationEmail:
+    Description: >
+      Email address to receive notifications from SNS
+    Type: String
+    Default: jeremy.ng.wk@duke-nus.edu.sg
+
+Resources:
+  # Vpc & networking
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Primary Vpc
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGW-primary
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # create the subnets - 2 private & 2 public subnets.
+  # public subnets are associated with the internet gateway
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.1.0/24'
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'PublicSubnet1'
+  PublicSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.2.0/24'
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: 'PublicSubnet2'
+  PrivateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.3.0/24'
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: 'PrivateSubnet1'
+  PrivateSubnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.4.0/24'
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: 'PrivateSubnet2'
+
+  # nat gateway
+  NatGatewayEIP:
+    Type: 'AWS::EC2::EIP'
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: 'PrimaryNatGatewayEIP'
+  NatGateway:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: 'NatGateway'
+
+  # route tables & association of subnets with route tables
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: 'PublicRouteTable'
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: 'PrivateRouteTable'
+
+  PublicSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+  PrivateSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnet2RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # private subnet routes to the nat gateway while public subnet routes
+  # igw.
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn:
+      - InternetGateway
+      - PublicRouteTable
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+  PrivateRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn:
+      - NatGateway
+      - PrivateRouteTable
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway
+
+  # security group
+  # application load balancer:
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/
+  # example-templates-autoscaling.html
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SecurityGroups
+        - Key: Name
+          Value: alb-sg
+      VpcId: !Ref VPC
+      GroupDescription: Security group for ALB to access R-studio Ec2 server
+      GroupName: alb-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8787
+          ToPort: 8787
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  RstudioSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn:
+      - ALBSecurityGroup
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SecurityGroups
+      VpcId: !Ref VPC
+      GroupDescription: Security group for HTTP access from port 8787 (R-studio)
+      GroupName: rstudio-sg
+      Tags:
+        - Key: Name
+          Value: rstudio-sg
+      SecurityGroupIngress:
+           - IpProtocol: -1
+             SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SecurityGroups
+      VpcId: !Ref VPC
+      GroupDescription: Security group for EFS
+      GroupName: efs-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !GetAtt RstudioSecurityGroup.GroupId
+
+  # user groups
+  RstudioUsers:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: RstudioUsers
+      Policies:
+        - PolicyName: RstudioUsersPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                  - ec2:DescribeInstanceStatus
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: !GetAtt OutputBucket.Arn
+  DataManagers:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: DataManagers
+      Policies:
+        - PolicyName: DataManagersPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt InputBucket.Arn
+                  - !GetAtt OutputBucket.Arn
+  DataUsers:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: DataUsers
+      Policies:
+        - PolicyName: DataUsersPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: !GetAtt OutputBucket.Arn
+  DataUploaders:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: DataOriginators
+      Policies:
+      - PolicyName: DataUploadersPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:ListBucket
+              Resource:
+                - !GetAtt InputBucket.Arn
+
+  # roles
+  LambdaEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaEC2StartStopRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaEC2StartStopPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                - ec2:StartInstances
+                - ec2:StopInstances
+                Resource: arn:aws:ec2:*:*:instance/*
+              - Effect: Allow
+                Action:
+                - ec2:DescribeInstances
+                - ec2:DescribeTags
+                - ec2:DescribeInstanceStatus
+                Resource: '*'
+  EC2InstancesIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "EC2InstancesIamRole-{AWS::Region}-{AWS::StackId}"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+                Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+  OmicsUnifiedServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OmicsUnifiedServiceRole-{AWS::Region}-{AWS::StackId}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: omics.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "OmicsUnifiedServicePolicy-{AWS::Region}-{AWS::StackId}"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt InputBucket.Arn
+                  - !GetAtt OutputBucket.Arn
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogStreams
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                Resource: '*'
+  IamPolicyForEC2Instance:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "EC2AccessToS3Buckets-{AWS::Region}-{AWS::StackId}"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 's3:*'
+            Resource:
+              - !GetAtt OutputBucket.Arn
+              - !GetAtt InputBucket.Arn
+      Roles:
+        - !Ref EC2InstancesIamRole
+
+  # event bridge rules
+  AutoStopEC2Rule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name : EC2AutoStopEndOfDayRule
+      Description: Auto Stop EC2 Instance (Mon-Fri 00:00 AM GMT)
+      ScheduleExpression: cron(0 16 ? * MON-SUN *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt AutoStopEC2Lambda.Arn
+          Id: AutoStopEC2Lambda
+  OmicsRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - OmicsTopic
+    Properties:
+      Name : OmicsRunStatus
+      Description: Omics run status updates
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt OmicsTopic.TopicArn
+          Id: OmicsTopic
+      EventPattern:
+        source:
+          - aws.omics
+        detail-type:
+          - "Run Status Change"
+        detail:
+          - FAILED
+          - COMPLETED
+          - CANCELLED
+          - STARTING
+  Ec2StatusRule:
+    DependsOn:
+      - Ec2Topic
+    Type: AWS::Events::Rule
+    Properties:
+      Name : EC2StatusChange
+      Description: Eventbridge for Ec2 status change
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt Ec2Topic.TopicArn
+          Id: Ec2Topic
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - "EC2 Instance State-change Notification"
+        detail:
+          - pending
+          - stopping
+          - shutting-down
+          - terminated
+
+  # application load balancer
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+      Name: EC2TargetGroup
+      Port: 8787
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '20'
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VPC
+      Targets:
+        - Id: !Ref EC2Instance
+          Port: 8787
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: ALBSecurityGroup
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId
+
+  # Sns
+  ObjectUploadTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SnsTopics
+        - Key: Stack
+          Value: S3
+      TopicName: S3ObjectUpload
+      Subscription:
+           - Endpoint: !Ref NotificationEmail
+             Protocol: email
+  ObjectDeleteTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SnsTopics
+        - Key: Stack
+          Value: S3
+      TopicName: S3ObjectDelete
+      Subscription:
+           - Endpoint: !Ref NotificationEmail
+             Protocol: email
+  Ec2Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SnsTopics
+        - Key: Stack
+          Value: EC2
+      TopicName: EC2Instance
+      Subscription:
+           - Endpoint: !Ref NotificationEmail
+             Protocol: email
+  OmicsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SnsTopics
+        - Key: Stack
+          Value: Omics
+      TopicName: OmicsTopic
+      Subscription:
+           - Endpoint: !Ref NotificationEmail
+             Protocol: email
+
+  # Sns topic policy for s3 buckets needs to be created before the s3 buckets are created
+  # and will be enforced on the s3 bucket creation using DependsOn
+  # in the cloud formation template.
+  S3UploadPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource:
+              - !GetAtt ObjectUploadTopic.TopicArn
+      Topics:
+        - !Ref ObjectUploadTopic
+  S3DeletePolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource:
+              - !GetAtt ObjectDeleteTopic.TopicArn
+      Topics:
+        - !Ref ObjectDeleteTopic
+  Ec2TopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource:
+              - !GetAtt Ec2Topic.TopicArn
+      Topics:
+        - !Ref Ec2Topic
+  OmicsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource:
+              - !GetAtt OmicsTopic.TopicArn
+      Topics:
+        - !Ref OmicsTopic
+
+  # S3
+  InputBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - ObjectUploadTopic
+      - S3UploadPolicy
+    Properties:
+      BucketName: !Ref InputBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Id: RawFastqDeletion
+            Prefix: glacier
+            Status: Enabled
+            ExpirationInDays: !Ref DaysToExpire
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !GetAtt ObjectUploadTopic.TopicArn
+          - Event: 's3:ObjectRemoved:*'
+            Topic: !GetAtt ObjectDeleteTopic.TopicArn
+      Tags:
+        - Key: Cost-Tag
+          Value: OFYIRG24jan
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - ObjectUploadTopic
+      - S3UploadPolicy
+    Properties:
+      BucketName: !Ref OutputBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Id: OutputArchival
+            Prefix: standardIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: !Ref DaysToTransition
+                StorageClass: STANDARD_IA
+              - TransitionInDays: !Ref DaysToArchive
+                StorageClass: GLACIER_IR
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !GetAtt ObjectUploadTopic.TopicArn
+          - Event: 's3:ObjectRemoved:*'
+            Topic: !GetAtt ObjectDeleteTopic.TopicArn
+      Tags:
+        - Key: Cost-Tag
+          Value: OFYIRG24jan
+  GEOTransferPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn:
+      - InputBucket
+    Properties:
+      Bucket: !Ref InputBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Sid: NCBIDataDeliveryAccess
+            Principal:
+              AWS:
+                - arn:aws:iam::783971887864:role/NCBI-CSVM-Service
+                - arn:aws:iam::184059545989:role/NCBI-CSVM-Service
+            Action:
+              - s3:*
+            Resource:
+              - !Sub arn:aws:s3:::${InputBucketName}/*
+              - !Sub arn:aws:s3:::${InputBucketName}
+
+  S3VpcEndPoint:
+    Type: AWS::EC2::VPCEndPoint
+    DependsOn:
+      - InputBucket
+      - OutputBucket
+      - PrivateRouteTable
+      - PublicRouteTable
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref VPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - 's3:*'
+            Resource:
+              - !GetAtt InputBucket.Arn
+              - !GetAtt OutputBucket.Arn
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+        - !Ref PublicRouteTable
+
+  # EC2
+  EC2KeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Ref SshKeyPairName
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "EC2InstanceProfile-{AWS::Region}-{AWS::StackId}"
+      Roles:
+        - !Ref EC2InstancesIamRole
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref EC2KeyPair
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/r-project.gpg
+          echo "deb [signed-by=/usr/share/keyrings/r-project.gpg] https://cloud.r-project.org/bin/linux/ubuntu jammy-cran40/" | sudo tee -a /etc/apt/sources.list.d/r-project.list
+          sudo apt update &&
+          sudo apt install unzip r-base-core gdebi-core curl libcurl4-openssl-dev libfontconfig1-dev libxml2-dev libharfbuzz-dev libfribidi-dev  libfreetype6-dev libpng-dev libtiff5-dev libjpeg-dev libgeos-dev  libudunits2-dev -y
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install
+          wget https://download2.rstudio.org/server/jammy/amd64/rstudio-server-2024.04.2-764-amd64.deb
+          sudo gdebi rstudio-server-2024.04.2-764-amd64.deb -n
+          sudo useradd -m -G sudo rstudio
+          echo "rstudio:P@ssword1" | sudo chpasswd
+          sudo chmod o=rw,u=rw /home/rstudio
+          sudo rstudio-server start
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref EbsVolumeSize
+            VolumeType: gp2
+            DeleteOnTermination: False
+      SecurityGroupIds:
+        - !GetAtt RstudioSecurityGroup.GroupId
+      SubnetId: !Ref PrivateSubnet1
+      Tags:
+        - Key: Name
+          Value: !Ref EC2InstanceTag
+        - Key: R version
+          Value: 4.4.1
+        - Key: Rstudio version
+          Value: 2024.04.2
+        - Key: KeyPair
+          Value: !Ref SshKeyPairName
+        - Key: AutoStop
+          Value: True
+        - Key: O.S
+          Value: Ubuntu 22.04
+        - Key: AMI
+          Value: !Ref LatestAmiId
+
+  # Efs
+  EfsFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "EfsFileSystem-{AWS::Region}-{AWS::StackId}"
+  EfsMount:
+    Type: AWS::EFS::MountTarget
+    DependsOn:
+      - EfsSecurityGroup
+      - EfsFileSystem
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups:
+        - !GetAtt EfsSecurityGroup.GroupId
+
+  # Resources for automated start/stop of EC2 instances using EventBridge + Lambda integration.
+  # Edited from https://github.com/aws-samples/aws-cfn-save-costs-auto-start-stop-ec2/
+  # blob/main/cfn_auto_start_stop_ec2/cfn_auto_start_stop_ec2.yaml
+  # Lambda permissions
+  AutoStopEC2LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AutoStopEC2Lambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn : !GetAtt AutoStopEC2Rule.Arn
+
+  # lambda functions to start and stop EC2 instances
+  AutoStopEC2Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "Autostop-Ec2-instance-{AWS::Region}"
+      Runtime: python3.9
+      MemorySize: 128
+      Role: !GetAtt
+        - LambdaEC2Role
+        - Arn
+      Handler: index.lambda_handler
+      Timeout: 60
+      Code:
+        ZipFile: |
+            import boto3
+            import logging
+            import os
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            region = os.environ['AWS_REGION']
+            ec2 = boto3.resource('ec2', region_name=region)
+
+            def lambda_handler(event, context):
+
+                filters = [
+                    {
+                        'Name': 'tag:AutoStop',
+                        'Values': ['TRUE','True','true']
+                    },
+                    {
+                        'Name': 'instance-state-name',
+                        'Values': ['running']
+                    }
+                ]
+
+                instances = ec2.instances.filter(Filters=filters)
+                RunningInstances = [instance.id for instance in instances]
+                print("Running Instances with AutoStop Tag : " + str(RunningInstances))
+
+                if len(RunningInstances) > 0:
+                    for instance in instances:
+                        if instance.state['Name'] == 'running':
+                            print("Stopping Instance : " + instance.id)
+                    AutoStopping = ec2.instances.filter(InstanceIds=RunningInstances).stop()
+                    print("Stopped Instances : " + str(RunningInstances))
+                else:
+                    print("Instance not in Running state or AutoStop Tag not set...")
+      Description: >-
+        Auto Stop EC2 Instance (from tag : AutoStop)
+
+  # sagemaker domain
+  SagemakerDomain:
+    Type: AWS::SageMaker::Domain
+    Properties:
+      AppNetworkAccessType: PublicInternetOnly
+      AuthMode: IAM
+      DomainName: !Sub "smr-{AWS::StackId}-{AWS::Region}-dn"
+      SubnetIds:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      VpcId: !Ref VPC
+      EFSStorageConfig:
+        FileSystemId: !Ref EfsFileSystem
+      DefaultEbsStorageSettings:
+        DefaultEbsVolumeSizeInGb: !Ref EbsVolumeSize
+      Tags:
+        - Key: Name
+          Value: sagemaker-domain
+        - Key: Cost-Tag
+          Value: OFYIRG24jan
+
+Outputs:
+  AlbDNS:
+    Description: DNS of the ALB for access to R-studio
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  SagemakerDomainName:
+    Description: Name of the Sagemaker domain for access to Sagemaker Studio
+    Value: !GetAtt SagemakerDomain.Url
