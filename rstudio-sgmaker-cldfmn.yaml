@@ -1,30 +1,21 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-  Aws infrastructure for bioinformatics research work.
-  Omics is used as the workflow manager for bioinformatics primary & secondary analysis.
-  This template provides an Ec2 instance with R-studio server for interactive R analysis while
-  Sagemaker is used for interfacing with Python AI tools & hugging face model.
-  GenAI capabilities are provided by Bedrock.
-  The list of R packages installed for bioinformatics analysis:
-    Generic single cell analysis:
-    - Seurat
-    - slingshot
-    - Monocle3
-    Functional Analysis:
-      - clusterProfiler
-      - GSVA
-    Bulk RNA-seq analysis:
-      - DESeq2
-      - limma
-    - ineq
-    Core bioconductor annotation packages (hg38)
-      - TxDb
-      - Org.hs
-      - GO
-    - tidyverse & miscellaneous packages
-    - paws
-    - maftools
+  Aws infrastructure for bioinformatics research work leveraging on integration between various AWS services for 
+  cost, compute, security and operational efficiency. Core services include AWS HealthOmics, Sagemaker, 
+  Bedrock and Ec2. Omics is used as the workflow manager for bioinformatics primary & secondary analysis. 
+  
+  The HealthOmics stack implemented for managing and deploying workflows to HealthOmics is  
+  found at https://github.com/aws-samples/aws-healthomics-dependencies-workflow-pipeline. This stack only creates
+  the required Iam Role for executing workflows.
 
+  The R-environment is provided by Rstudio server hosted on Ec2 behind an ALB. As the Ec2 is within the private subnet 
+  (recommended  as a best practice), high cost can be incurred from the NAT gateway needed to secure this 
+  architecture. Cost reduction can be achieved by moving the Ec2 instance into the public subnet and removing 
+  the NAT gateway & ALB. The full list of R packages installed for bioinformatics analysis in the (private) Ami 
+  used by default can be obtained from R-studio via sessionInfo().
+
+  Sagemaker & Bedrock are used for Machine Learning/GenerativeAI workloads. 
+   
   Written by - Jeremy Ng (Contact at jeremy.ng.w.k@sgh.com.sg/jeremy.ng.wk@duke-nus.edu.sg)
   in consultation with Eugene Ng (contact at eugenelq@amazon.com).
 
@@ -408,6 +399,7 @@ Resources:
             Principal:
                 Service: ec2.amazonaws.com
             Action: sts:AssumeRole
+  # To do: Check Omics Service Role policy
   OmicsUnifiedServiceRole:
     Type: AWS::IAM::Role
     Properties:
