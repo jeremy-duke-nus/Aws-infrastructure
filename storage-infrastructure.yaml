@@ -57,6 +57,7 @@ Resources:
                 Resource:
                   - !GetAtt InputBucket.Arn
                   - !GetAtt OutputBucket.Arn
+                  - !GetAtt AnalysisBucket.Arn
   DataUsers:
     Type: AWS::IAM::Group
     Properties:
@@ -70,7 +71,9 @@ Resources:
                 Action:
                   - s3:GetObject
                   - s3:ListBucket
-                Resource: !GetAtt OutputBucket.Arn
+                Resource:
+                  - !GetAtt OutputBucket.Arn
+                  - !GetAtt AnalysisBucket.Arn
   DataUploaders:
     Type: AWS::IAM::Group
     Properties:
