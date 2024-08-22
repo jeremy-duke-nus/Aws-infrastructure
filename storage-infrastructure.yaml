@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  This template creates the storage infrastructure for the AWS environment.
+
+Parameters:
+  InputBucketName:
+    Description: >
+      Name of input bucket for Omics workflows.
+      Files here will not be archived and deleted after $DaysToExpire
+    Default: "inputs"
+    Type: String
+  OutputBucketName:
+    Description: >
+      Name of output bucket to store results from analysis.
+      Files will be archived after $DaysToArchive following transition to
+      STANDARD_IA after $DaysToTransition
+    Default: outputs
+    Type: String
+  DaysToExpire:
+    Description: Number of days files in input bucket should be stored before deletion
+    Default: 60
+    Type: Number
+  DaysToTransition:
+    Description: Number of days files in output bucket should be transitioned to STANDARD_IR
+    Default: 60
+    Type: Number
+  DaysToArchive:
+    Description: Number of days STANDARD_IR files should be transitioned to GLACIER_IR
+    Default: 180
+    Type: Number
+  NotificationEmail:
+    Description: >
+      Email address to receive notifications from SNS
+    Type: String
+    Default: jeremy.ng.wk@duke-nus.edu.sg
+
+Resources:
+  DataManagers:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: DataManagers
+      Policies:
+        - PolicyName: !Sub "DataManagersPolicy-${AWS::Region}"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt InputBucket.Arn
+                  - !GetAtt OutputBucket.Arn
+  DataUsers:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "DataUsers-${AWS::Region}"
+      Policies:
+        - PolicyName: DataUsersPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: !GetAtt OutputBucket.Arn
+  DataUploaders:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub "DataOriginators-${AWS::Region}"
+      Policies:
+        - PolicyName: DataUploadersPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt InputBucket.Arn
+  IamPolicyForEC2Instance:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "EC2AccessToS3Buckets-${AWS::Region}"
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: "s3:*"
+            Resource:
+              - !GetAtt OutputBucket.Arn
+              - !GetAtt InputBucket.Arn
+      Roles:
+        - !Ref EC2InstancesIamRole
+  InputBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - ObjectUploadTopic
+      - S3UploadPolicy
+    Properties:
+      BucketName: !Ref InputBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Id: RawFastqDeletion
+            Prefix: glacier
+            Status: Enabled
+            ExpirationInDays: !Ref DaysToExpire
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !GetAtt ObjectUploadTopic.TopicArn
+          - Event: "s3:ObjectRemoved:*"
+            Topic: !GetAtt ObjectDeleteTopic.TopicArn
+      Tags:
+        - Key: Cost-Tag
+          Value: OFYIRG24jan
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - ObjectUploadTopic
+      - S3UploadPolicy
+    Properties:
+      BucketName: !Ref OutputBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Id: OutputArchival
+            Prefix: standardIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: !Ref DaysToTransition
+                StorageClass: STANDARD_IA
+              - TransitionInDays: !Ref DaysToArchive
+                StorageClass: GLACIER_IR
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !GetAtt ObjectUploadTopic.TopicArn
+          - Event: "s3:ObjectRemoved:*"
+            Topic: !GetAtt ObjectDeleteTopic.TopicArn
+  GEOTransferPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn:
+      - InputBucket
+    Properties:
+      Bucket: !Ref InputBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Sid: NCBIDataDeliveryAccess
+            Principal:
+              AWS:
+                - arn:aws:iam::783971887864:role/NCBI-CSVM-Service
+                - arn:aws:iam::184059545989:role/NCBI-CSVM-Service
+            Action:
+              - s3:*
+            Resource:
+              - !Sub arn:aws:s3:::${InputBucketName}/*
+              - !Sub arn:aws:s3:::${InputBucketName}
+  S3UploadPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource:
+              - !GetAtt ObjectUploadTopic.TopicArn
+      Topics:
+        - !Ref ObjectUploadTopic
+  S3DeletePolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource:
+              - !GetAtt ObjectDeleteTopic.TopicArn
+      Topics:
+        - !Ref ObjectDeleteTopic
+  ObjectUploadTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SnsTopics
+        - Key: Stack
+          Value: S3
+      TopicName: S3ObjectUpload
+      Subscription:
+        - Endpoint: !Ref NotificationEmail
+          Protocol: email
+  ObjectDeleteTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: Resource
+          Value: SnsTopics
+        - Key: Stack
+          Value: S3
+      TopicName: S3ObjectDelete
+      Subscription:
+        - Endpoint: !Ref NotificationEmail
+          Protocol: email
