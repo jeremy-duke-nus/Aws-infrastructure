@@ -82,6 +82,20 @@ Resources:
                   - s3:ListBucket
                 Resource:
                   - !GetAtt InputBucket.Arn
+
+  EC2InstancesIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "EC2InstancesIamRole-${AWS::Region}"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
   IamPolicyForEC2Instance:
     Type: AWS::IAM::Policy
     Properties:
