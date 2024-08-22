@@ -33,7 +33,11 @@ Parameters:
       Email address to receive notifications from SNS
     Type: String
     Default: jeremy.ng.wk@duke-nus.edu.sg
-
+  AnalysisBucketName:
+    Description: >
+      Name of bucket to store analysis results
+    Type: String
+    Default: analysis
 Resources:
   DataManagers:
     Type: AWS::IAM::Group
@@ -149,6 +153,19 @@ Resources:
                 StorageClass: STANDARD_IA
               - TransitionInDays: !Ref DaysToArchive
                 StorageClass: GLACIER_IR
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Topic: !GetAtt ObjectUploadTopic.TopicArn
+          - Event: "s3:ObjectRemoved:*"
+            Topic: !GetAtt ObjectDeleteTopic.TopicArn
+  AnalysisBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - ObjectUploadTopic
+      - S3UploadPolicy
+    Properties:
+      BucketName: !Ref AnalysisBucketName
       NotificationConfiguration:
         TopicConfigurations:
           - Event: s3:ObjectCreated:*
