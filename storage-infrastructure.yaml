@@ -42,7 +42,7 @@ Resources:
   DataManagers:
     Type: AWS::IAM::Group
     Properties:
-      GroupName: DataManagers
+      GroupName: !Sub "DataManagers-${AWS::Region}"
       Policies:
         - PolicyName: !Sub "DataManagersPolicy-${AWS::Region}"
           PolicyDocument:
@@ -90,23 +90,28 @@ Resources:
                 Resource:
                   - !GetAtt InputBucket.Arn
 
-  EC2InstancesIamRole:
+  Ec2Role:
+    DependsOn:
+      - IamManagedPolicyForEC2Instance
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "EC2InstancesIamRole-${AWS::Region}"
+      RoleName: !Sub "EC2Role-${AWS::Region}"
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Ref IamManagedPolicyForEC2Instance
       AssumeRolePolicyDocument:
-        Version: 2012-10-17
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-  IamPolicyForEC2Instance:
-    Type: AWS::IAM::Policy
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+
+  IamManagedPolicyForEC2Instance:
+    Type: AWS::IAM::ManagedPolicy
     Properties:
-      PolicyName: !Sub "EC2AccessToS3Buckets-${AWS::Region}"
+      ManagedPolicyName: !Sub "EC2AccessToS3Buckets-${AWS::Region}"
       PolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -115,8 +120,16 @@ Resources:
             Resource:
               - !GetAtt OutputBucket.Arn
               - !GetAtt InputBucket.Arn
-      Roles:
-        - !Ref EC2InstancesIamRole
+              - !GetAtt AnalysisBucket.Arn
+              - !Sub "arn:aws:s3:::${InputBucketName}/*"
+              - !Sub "arn:aws:s3:::${OutputBucketName}/*"
+              - !Sub "arn:aws:s3:::${AnalysisBucketName}/*"
+          - Effect: Allow
+            Action:
+              - "s3:ListAllMyBuckets"
+            Resource:
+              - "arn:aws:s3:::*"
+
   InputBucket:
     Type: AWS::S3::Bucket
     DependsOn:
