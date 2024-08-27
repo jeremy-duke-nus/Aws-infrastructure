@@ -270,20 +270,6 @@ Resources:
       SecurityGroupIngress:
            - IpProtocol: -1
              SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
-  EfsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      Tags:
-        - Key: Resource
-          Value: SecurityGroups
-      VpcId: !Ref VPC
-      GroupDescription: Security group for EFS
-      GroupName: efs-sg
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 2049
-          ToPort: 2049
-          SourceSecurityGroupId: !GetAtt RstudioSecurityGroup.GroupId
 
   # user groups
   RstudioUsers:
@@ -306,54 +292,7 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource: !GetAtt OutputBucket.Arn
-  DataManagers:
-    Type: AWS::IAM::Group
-    Properties:
-      GroupName: DataManagers
-      Policies:
-        - PolicyName: !Sub "DataManagersPolicy-${AWS::Region}"
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:ListBucket
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:DeleteObject
-                Resource:
-                  - !GetAtt InputBucket.Arn
-                  - !GetAtt OutputBucket.Arn
-  DataUsers:
-    Type: AWS::IAM::Group
-    Properties:
-      GroupName: !Sub "DataUsers-${AWS::Region}"
-      Policies:
-        - PolicyName: DataUsersPolicy
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource: !GetAtt OutputBucket.Arn
-  DataUploaders:
-    Type: AWS::IAM::Group
-    Properties:
-      GroupName: !Sub "DataOriginators-${AWS::Region}"
-      Policies:
-      - PolicyName: DataUploadersPolicy
-        PolicyDocument:
-          Version: 2012-10-17
-          Statement:
-            - Effect: Allow
-              Action:
-                - s3:PutObject
-                - s3:ListBucket
-              Resource:
-                - !GetAtt InputBucket.Arn
-
+  
   # roles
   LambdaEC2Role:
     Type: AWS::IAM::Role
@@ -399,56 +338,7 @@ Resources:
             Principal:
                 Service: ec2.amazonaws.com
             Action: sts:AssumeRole
-  # To do: Check Omics Service Role policy
-  OmicsUnifiedServiceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "OmicsUnifiedServiceRole-${AWS::Region}"
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: omics.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: !Sub "OmicsUnifiedServicePolicy-${AWS::Region}"
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:ListBucket
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:DeleteObject
-                Resource:
-                  - !GetAtt InputBucket.Arn
-                  - !GetAtt OutputBucket.Arn
-              - Effect: Allow
-                Action:
-                  - logs:DescribeLogStreams
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - ecr:BatchGetImage
-                  - ecr:BatchCheckLayerAvailability
-                  - ecr:GetDownloadUrlForLayer
-                Resource: '*'
-  IamPolicyForEC2Instance:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: !Sub "EC2AccessToS3Buckets-${AWS::Region}"
-      PolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Action: 's3:*'
-            Resource:
-              - !GetAtt OutputBucket.Arn
-              - !GetAtt InputBucket.Arn
-      Roles:
-        - !Ref EC2InstancesIamRole
-
+  
   # event bridge rules
   AutoStopEC2Rule:
     Type: AWS::Events::Rule
@@ -460,27 +350,6 @@ Resources:
       Targets:
         - Arn: !GetAtt AutoStopEC2Lambda.Arn
           Id: AutoStopEC2Lambda
-  OmicsRule:
-    Type: AWS::Events::Rule
-    DependsOn:
-      - OmicsTopic
-    Properties:
-      Name : OmicsRunStatus
-      Description: Omics run status updates
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt OmicsTopic.TopicArn
-          Id: OmicsTopic
-      EventPattern:
-        source:
-          - aws.omics
-        detail-type:
-          - "Run Status Change"
-        detail:
-          - FAILED
-          - COMPLETED
-          - CANCELLED
-          - STARTING
   Ec2StatusRule:
     DependsOn:
       - Ec2Topic
@@ -544,199 +413,9 @@ Resources:
       SecurityGroups:
         - !GetAtt ALBSecurityGroup.GroupId
 
-  # Sns
-  ObjectUploadTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      Tags:
-        - Key: Resource
-          Value: SnsTopics
-        - Key: Stack
-          Value: S3
-      TopicName: S3ObjectUpload
-      Subscription:
-           - Endpoint: !Ref NotificationEmail
-             Protocol: email
-  ObjectDeleteTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      Tags:
-        - Key: Resource
-          Value: SnsTopics
-        - Key: Stack
-          Value: S3
-      TopicName: S3ObjectDelete
-      Subscription:
-           - Endpoint: !Ref NotificationEmail
-             Protocol: email
-  Ec2Topic:
-    Type: AWS::SNS::Topic
-    Properties:
-      Tags:
-        - Key: Resource
-          Value: SnsTopics
-        - Key: Stack
-          Value: EC2
-      TopicName: EC2Instance
-      Subscription:
-           - Endpoint: !Ref NotificationEmail
-             Protocol: email
-  OmicsTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      Tags:
-        - Key: Resource
-          Value: SnsTopics
-        - Key: Stack
-          Value: Omics
-      TopicName: OmicsTopic
-      Subscription:
-           - Endpoint: !Ref NotificationEmail
-             Protocol: email
-
-  # Sns topic policy for s3 buckets needs to be created before the s3 buckets are created
-  # and will be enforced on the s3 bucket creation using DependsOn
-  # in the cloud formation template.
-  S3UploadPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - s3.amazonaws.com
-            Action:
-              - sns:Publish
-            Resource:
-              - !GetAtt ObjectUploadTopic.TopicArn
-      Topics:
-        - !Ref ObjectUploadTopic
-  S3DeletePolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - s3.amazonaws.com
-            Action:
-              - sns:Publish
-            Resource:
-              - !GetAtt ObjectDeleteTopic.TopicArn
-      Topics:
-        - !Ref ObjectDeleteTopic
-  Ec2TopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - events.amazonaws.com
-            Action:
-              - sns:Publish
-            Resource:
-              - !GetAtt Ec2Topic.TopicArn
-      Topics:
-        - !Ref Ec2Topic
-  OmicsTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - events.amazonaws.com
-            Action:
-              - sns:Publish
-            Resource:
-              - !GetAtt OmicsTopic.TopicArn
-      Topics:
-        - !Ref OmicsTopic
-
-  # S3
-  InputBucket:
-    Type: AWS::S3::Bucket
-    DependsOn:
-      - ObjectUploadTopic
-      - S3UploadPolicy
-    Properties:
-      BucketName: !Ref InputBucketName
-      LifecycleConfiguration:
-        Rules:
-          - Id: RawFastqDeletion
-            Prefix: glacier
-            Status: Enabled
-            ExpirationInDays: !Ref DaysToExpire
-      NotificationConfiguration:
-        TopicConfigurations:
-          - Event: s3:ObjectCreated:*
-            Topic: !GetAtt ObjectUploadTopic.TopicArn
-          - Event: 's3:ObjectRemoved:*'
-            Topic: !GetAtt ObjectDeleteTopic.TopicArn
-      Tags:
-        - Key: Cost-Tag
-          Value: OFYIRG24jan
-  OutputBucket:
-    Type: AWS::S3::Bucket
-    DependsOn:
-      - ObjectUploadTopic
-      - S3UploadPolicy
-    Properties:
-      BucketName: !Ref OutputBucketName
-      LifecycleConfiguration:
-        Rules:
-          - Id: OutputArchival
-            Prefix: standardIA
-            Status: Enabled
-            Transitions:
-              - TransitionInDays: !Ref DaysToTransition
-                StorageClass: STANDARD_IA
-              - TransitionInDays: !Ref DaysToArchive
-                StorageClass: GLACIER_IR
-      NotificationConfiguration:
-        TopicConfigurations:
-          - Event: s3:ObjectCreated:*
-            Topic: !GetAtt ObjectUploadTopic.TopicArn
-          - Event: 's3:ObjectRemoved:*'
-            Topic: !GetAtt ObjectDeleteTopic.TopicArn
-      Tags:
-        - Key: Cost-Tag
-          Value: OFYIRG24jan
-  GEOTransferPolicy:
-    Type: AWS::S3::BucketPolicy
-    DependsOn:
-      - InputBucket
-    Properties:
-      Bucket: !Ref InputBucket
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Sid: NCBIDataDeliveryAccess
-            Principal:
-              AWS:
-                - arn:aws:iam::783971887864:role/NCBI-CSVM-Service
-                - arn:aws:iam::184059545989:role/NCBI-CSVM-Service
-            Action:
-              - s3:*
-            Resource:
-              - !Sub arn:aws:s3:::${InputBucketName}/*
-              - !Sub arn:aws:s3:::${InputBucketName}
-
-  S3VpcEndPoint:
+   S3VpcEndPoint:
     Type: AWS::EC2::VPCEndpoint
     DependsOn:
-      - InputBucket
-      - OutputBucket
       - PrivateRouteTable
       - PublicRouteTable
     Properties:
@@ -751,8 +430,8 @@ Resources:
             Action:
               - 's3:*'
             Resource:
-              - !GetAtt InputBucket.Arn
-              - !GetAtt OutputBucket.Arn
+              - !Ref InputBucketArn
+              - !Ref OutputBucketArn
       RouteTableIds:
         - !Ref PrivateRouteTable
         - !Ref PublicRouteTable
@@ -794,25 +473,6 @@ Resources:
           Value: Ubuntu 22.04
         - Key: AMI
           Value: !Ref LatestAmiId
-
-  # Efs
-  EfsFileSystem:
-    Type: AWS::EFS::FileSystem
-    Properties:
-      FileSystemTags:
-        - Key: Name
-          Value: !Sub "EfsFileSystem-${AWS::Region}"
-  EfsMount:
-    Type: AWS::EFS::MountTarget
-    DependsOn:
-      - EfsSecurityGroup
-      - EfsFileSystem
-    Properties:
-      FileSystemId: !Ref EfsFileSystem
-      SubnetId: !Ref PrivateSubnet1
-      SecurityGroups:
-        - !GetAtt EfsSecurityGroup.GroupId
-
   # Resources for automated start/stop of EC2 instances using EventBridge + Lambda integration.
   # Edited from https://github.com/aws-samples/aws-cfn-save-costs-auto-start-stop-ec2/
   # blob/main/cfn_auto_start_stop_ec2/cfn_auto_start_stop_ec2.yaml
@@ -876,8 +536,6 @@ Resources:
                     print("Instance not in Running state or AutoStop Tag not set...")
       Description: >-
         Auto Stop EC2 Instance (from tag : AutoStop)
-
-
 
 Outputs:
   AlbDNS:
