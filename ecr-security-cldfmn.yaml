@@ -1,9 +1,7 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
   This template creates the security infrastructure for the AWS environment, leveraging on AWS Inspector to 
-  scan ECR, EC2 and Lambda functions for vulnerabilities. Workflow as follows:
-    - EB triggers to
-
+  scan ECR, EC2 and Lambda functions for vulnerabilities. 
 Parameters:
   NotificationEmail:
     Description: >
@@ -18,18 +16,35 @@ Parameters:
 
 # Taken from https://asecure.cloud/a/detect-inspector-findings/
 Resources:
-  s3Key:
+  S3Key:
     Type: AWS::KMS::Key
+    Properties:
+      KeyPolicy: 
+         Version: 2012-10-17
+         Id: kms-key-default-1
+         Statement:
+          - Sid: Enable Lambda to use the key
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: kms:*
+            Resource: "*"
+          - Sid: Enable role to use the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${InspectorRolePrefix}-LambdaRole-${AWS::Region}"
+            Action: kms:*
+            Resource: "*"
 
-  s3KeyAlias:
+  S3KeyAlias:
     Type: AWS::KMS::Alias
     Properties:
-      AliasName: alias/s3
+      AliasName: alias/inspector-kms-key
       TargetKeyId:
-        Ref: s3Key
+        Ref: S3Key
 
-    # Encrypted S3 Bucket for Storage
-  InspectorResults:
+  # Encrypted S3 Bucket for Storage
+  InspectorResultsBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "security-${AWS::AccountId}-${AWS::Region}"
@@ -39,9 +54,26 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${s3KeyAlias}"
+              KMSMasterKeyID: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${S3KeyAlias}"
               SSEAlgorithm: "aws:kms"
-
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InspectorResultsBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: 
+              Service: lambda.amazonaws.com
+            Action: 
+              - s3:GetObject
+              - s3:PutObject
+              - s3:PutObjectAcl
+              - s3:GetObjectAcl
+            Resource: 
+              - !Sub "${InspectorResultsBucket.Arn}/*"
+              - !Sub "${InspectorResultsBucket.Arn}"
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -56,7 +88,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: CreateFindingReport
+        - PolicyName: !Sub CreateFindingReport-${AWS::Region}
           PolicyDocument:
             Version: 2012-10-17
             Statement:
@@ -68,8 +100,14 @@ Resources:
                 Action:
                   - s3:PutObject
                   - s3:GetObject
+                  - s3:PutObjectAcl
+                  - s3:GetObjectAcl
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
                 Resource:
-                  - !GetAtt InspectorResults.Arn
+                  - !GetAtt InspectorResultsBucket.Arn
+                  - !GetAtt S3Key.Arn
 
   # Taken from https://github.com/aws-samples/findings-reporter-for-amazon-inspector/blob/main/lambda/report_generator/report_generator.py
   GenerateFindingReport:
@@ -86,7 +124,7 @@ Resources:
       Environment:
         Variables:
           S3_BUCKET: !Sub "security-${AWS::AccountId}-${AWS::Region}"
-          KMS: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${s3KeyAlias}"
+          KMS: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${S3KeyAlias}"
       Code:
         ZipFile: |
           import boto3
@@ -95,7 +133,6 @@ Resources:
 
           inspector2_client = boto3.client('inspector2')
           def lambda_handler(event, context):
-
             report_bucket = os.getenv('S3_BUCKET')
             kms_key = os.getenv('KMS')
             response = inspector2_client.create_findings_report(
