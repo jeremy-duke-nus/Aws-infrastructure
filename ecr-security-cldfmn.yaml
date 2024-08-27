@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  This template creates the security infrastructure for the AWS environment, leveraging on AWS Inspector to 
+  scan ECR, EC2 and Lambda functions for vulnerabilities. Workflow as follows:
+    - EB triggers to
+
+Parameters:
+  NotificationEmail:
+    Description: >
+      Email address to receive notifications from SNS
+    Type: String
+    Default: jeremy.ng.wk@duke-nus.edu.sg
+  InspectorRolePrefix:
+    Description: >
+      Name of the role to be created for AWS Inspector
+    Type: String
+    Default: InspectorRole
+
+# Taken from https://asecure.cloud/a/detect-inspector-findings/
+Resources:
+  s3Key:
+    Type: AWS::KMS::Key
+
+  s3KeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/s3
+      TargetKeyId:
+        Ref: s3Key
+
+    # Encrypted S3 Bucket for Storage
+  InspectorResults:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "security-${AWS::AccountId}-${AWS::Region}"
+      Tags:
+        - Key: Role
+          Value: Security
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${s3KeyAlias}"
+              SSEAlgorithm: "aws:kms"
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${InspectorRolePrefix}-LambdaRole-${AWS::Region}"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CreateFindingReport
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - inspector2:CreateFindingsReport
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource:
+                  - !GetAtt InspectorResults.Arn
+
+  # Taken from https://github.com/aws-samples/findings-reporter-for-amazon-inspector/blob/main/lambda/report_generator/report_generator.py
+  GenerateFindingReport:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "GenerateFindingReport-${AWS::Region}"
+      Runtime: python3.12
+      MemorySize: 128
+      Role: !GetAtt
+        - LambdaRole
+        - Arn
+      Handler: index.lambda_handler
+      Timeout: 60
+      Environment:
+        Variables:
+          S3_BUCKET: !Sub "security-${AWS::AccountId}-${AWS::Region}"
+          KMS: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${s3KeyAlias}"
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+
+          inspector2_client = boto3.client('inspector2')
+          def lambda_handler(event, context):
+
+            report_bucket = os.getenv('S3_BUCKET')
+            kms_key = os.getenv('KMS')
+            response = inspector2_client.create_findings_report(
+                                            reportFormat='CSV',
+                                            s3Destination={
+                                              'bucketName': report_bucket,
+                                              'kmsKeyArn': kms_key
+                                            })
+            return {
+              'statusCode': 200,
+              'body': json.dumps(response)
+            }
