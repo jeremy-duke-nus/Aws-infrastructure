@@ -1,61 +1,46 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
   This template creates the security infrastructure for the AWS environment, leveraging on AWS Inspector to 
-  scan ECR, EC2 and Lambda functions for vulnerabilities. 
-Parameters:
-  NotificationEmail:
-    Description: >
-      Email address to receive notifications from SNS
-    Type: String
-    Default: jeremy.ng.wk@duke-nus.edu.sg
-  InspectorRolePrefix:
-    Description: >
-      Name of the role to be created for AWS Inspector
-    Type: String
-    Default: InspectorRole
+  scan ECR, EC2 and Lambda functions for vulnerabilities.
 
-# Taken from https://asecure.cloud/a/detect-inspector-findings/
 Resources:
-  S3Key:
+  KmsKey:
     Type: AWS::KMS::Key
     Properties:
-      KeyPolicy: 
-         Version: 2012-10-17
-         Id: kms-key-default-1
-         Statement:
-          - Sid: Enable Lambda to use the key
-            Effect: Allow
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: inspector-kms-key-policy
+        Statement:
+          - Sid: "Enable IAM user permissions"
+            Effect: "Allow"
             Principal:
-              Service: lambda.amazonaws.com
-            Action: kms:*
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
             Resource: "*"
-          - Sid: Enable role to use the key
-            Effect: Allow
+          - Sid: "Allow Inspector to use key"
+            Effect: "Allow"
             Principal:
-              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:role/${InspectorRolePrefix}-LambdaRole-${AWS::Region}"
-            Action: kms:*
+              Service: "inspector2.amazonaws.com"
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
             Resource: "*"
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Sub "${AWS::AccountId}"
+              ArnLike:
+                "aws:SourceArn": !Sub "arn:aws:inspector2:${AWS::Region}:${AWS::AccountId}:report/*"
 
-  S3KeyAlias:
+  KmsAlias:
     Type: AWS::KMS::Alias
     Properties:
-      AliasName: alias/inspector-kms-key
-      TargetKeyId:
-        Ref: S3Key
-
-  # Encrypted S3 Bucket for Storage
+      AliasName: alias/InspectorKey-Cldfmn
+      TargetKeyId: !Ref KmsKey
   InspectorResultsBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "security-${AWS::AccountId}-${AWS::Region}"
-      Tags:
-        - Key: Role
-          Value: Security
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${S3KeyAlias}"
-              SSEAlgorithm: "aws:kms"
+
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -64,20 +49,24 @@ Resources:
         Version: 2012-10-17
         Statement:
           - Effect: Allow
-            Principal: 
-              Service: lambda.amazonaws.com
-            Action: 
-              - s3:GetObject
+            Principal:
+              Service: inspector2.amazonaws.com
+            Action:
               - s3:PutObject
               - s3:PutObjectAcl
-              - s3:GetObjectAcl
-            Resource: 
+              - s3:AbortMultipartUpload
+            Resource:
               - !Sub "${InspectorResultsBucket.Arn}/*"
-              - !Sub "${InspectorResultsBucket.Arn}"
+            Condition:
+              StringEquals:
+                "aws:SourceAccount": !Sub ${AWS::AccountId}
+              ArnLike:
+                "aws:SourceArn": !Sub "arn:aws:inspector:${AWS::Region}:${AWS::AccountId}:report/*"
+
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${InspectorRolePrefix}-LambdaRole-${AWS::Region}"
+      RoleName: !Sub "InspectorRole-${AWS::Region}"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       AssumeRolePolicyDocument:
@@ -99,17 +88,10 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:PutObject
-                  - s3:GetObject
                   - s3:PutObjectAcl
-                  - s3:GetObjectAcl
-                  - kms:Decrypt
-                  - kms:Encrypt
-                  - kms:GenerateDataKey
                 Resource:
-                  - !GetAtt InspectorResultsBucket.Arn
-                  - !GetAtt S3Key.Arn
+                  - !Sub "arn:aws:s3:::security-${AWS::AccountId}-${AWS::Region}/*"
 
-  # Taken from https://github.com/aws-samples/findings-reporter-for-amazon-inspector/blob/main/lambda/report_generator/report_generator.py
   GenerateFindingReport:
     Type: AWS::Lambda::Function
     Properties:
@@ -124,22 +106,25 @@ Resources:
       Environment:
         Variables:
           S3_BUCKET: !Sub "security-${AWS::AccountId}-${AWS::Region}"
-          KMS: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:${S3KeyAlias}"
+          KMS_KEY: !GetAtt KmsKey.Arn
       Code:
         ZipFile: |
           import boto3
+          from datetime import datetime
           import json
           import os
 
           inspector2_client = boto3.client('inspector2')
+
           def lambda_handler(event, context):
             report_bucket = os.getenv('S3_BUCKET')
-            kms_key = os.getenv('KMS')
+            kms_key = os.getenv('KMS_KEY')
             response = inspector2_client.create_findings_report(
-                                            reportFormat='CSV',
+                                            reportFormat='JSON',
                                             s3Destination={
                                               'bucketName': report_bucket,
-                                              'kmsKeyArn': kms_key
+                                              'kmsKeyArn': kms_key,
+                                              'keyPrefix': datetime.now().strftime("%Y/%m/%d")
                                             })
             return {
               'statusCode': 200,
