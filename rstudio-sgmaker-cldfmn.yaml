@@ -1,62 +1,39 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-  Aws infrastructure for bioinformatics research work leveraging on integration between various AWS services for 
-  cost, compute, security and operational efficiency. Core services include AWS HealthOmics, Sagemaker, 
-  Bedrock and Ec2. Omics is used as the workflow manager for bioinformatics primary & secondary analysis. 
-  
-  The HealthOmics stack implemented for managing and deploying workflows to HealthOmics is  
-  found at https://github.com/aws-samples/aws-healthomics-dependencies-workflow-pipeline. This stack only creates
-  the required Iam Role for executing workflows.
-
-  The R-environment is provided by Rstudio server hosted on Ec2 behind an ALB. As the Ec2 is within the private subnet 
-  (recommended  as a best practice), high cost can be incurred from the NAT gateway needed to secure this 
-  architecture. Cost reduction can be achieved by moving the Ec2 instance into the public subnet and removing 
-  the NAT gateway & ALB. The full list of R packages installed for bioinformatics analysis in the (private) Ami 
-  used by default can be obtained from R-studio via sessionInfo().
-
-  Sagemaker & Bedrock are used for Machine Learning/GenerativeAI workloads. 
+  Aws infrastructure for r studio hosting on Ec2
    
   Written by - Jeremy Ng (Contact at jeremy.ng.w.k@sgh.com.sg/jeremy.ng.wk@duke-nus.edu.sg)
   in consultation with Eugene Ng (contact at eugenelq@amazon.com).
 
 Parameters:
+  AnalysisBucketArn:
+    Description: Analysis bucket ARN. 
+    Type: String
+    Default: arn:aws:s3:::analysis-ap-southeast-1-wkj24002
+  InputBucketArn:
+    Description: Input bucket ARN. 
+    Type: String
+    Default: arn:aws:s3:::inputs-ap-southeast-1-asadsdsf-wkj24002
+  OutputBucketArn:
+    Description: Output bucket ARN.
+    Type: String
+    Default: arn:aws:s3:::outputs-ap-southeast-1-wkj24002
   EbsVolumeSize:
     Description: Size of the EBS volume in GB
     Type: Number
-    Default: 20
+    Default: 500
   EC2InstanceTag:
     Description: Name of the EC2 instance
     Type: String
     Default: RStudio-dev
-  InputBucketName:
-    Description: >
-      Name of input bucket for Omics workflows.
-      Files here will not be archived and deleted after $DaysToExpire
-    Default: "inputs"
-    Type: String
-  OutputBucketName:
-    Description: >
-      Name of output bucket to store results from analysis.
-      Files will be archived after $DaysToArchive following transition to
-      STANDARD_IA after $DaysToTransition
-    Default: outputs
-    Type: String
-  DaysToExpire:
-    Description: Number of days files in input bucket should be stored before deletion
-    Default: 60
-    Type: Number
-  DaysToTransition:
-    Description: Number of days files in output bucket should be transitioned to STANDARD_IR
-    Default: 60
-    Type: Number
-  DaysToArchive:
-    Description: Number of days STANDARD_IR files should be transitioned to GLACIER_IR
-    Default: 180
-    Type: Number
   LatestAmiId:
     Description: AMI Id to be used for EC2 instance
     Type: String
-    Default: 'ami-0ac55f2a58f397c92'
+    Default: ami-061a07f14f65f7676
+  PolicyArn:
+    Description: Policy ARN to be attached to the EC2 instance with permissions to Ec2
+    Type: String
+    Default: arn:aws:iam::009160053326:policy/EC2AccessToS3Buckets-ap-southeast-1
   InstanceType:
     Type: String
     Default: r6a.2xlarge
@@ -76,12 +53,6 @@ Parameters:
       - x2idn.32xlarge
       - x2iedn.24xlarge
       - x2iedn.32xlarge
-  NotificationEmail:
-    Description: >
-      Email address to receive notifications from SNS
-    Type: String
-    Default: jeremy.ng.wk@duke-nus.edu.sg
-
 Resources:
   # Vpc & networking
   VPC:
@@ -204,18 +175,12 @@ Resources:
   # igw.
   PublicRoute:
     Type: 'AWS::EC2::Route'
-    DependsOn:
-      - InternetGateway
-      - PublicRouteTable
     Properties:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: '0.0.0.0/0'
       GatewayId: !Ref InternetGateway
   PrivateRoute:
     Type: 'AWS::EC2::Route'
-    DependsOn:
-      - NatGateway
-      - PrivateRouteTable
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: '0.0.0.0/0'
@@ -255,12 +220,7 @@ Resources:
           CidrIp: 0.0.0.0/0
   RstudioSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    DependsOn:
-      - ALBSecurityGroup
     Properties:
-      Tags:
-        - Key: Resource
-          Value: SecurityGroups
       VpcId: !Ref VPC
       GroupDescription: Security group for HTTP access from port 8787 (R-studio)
       GroupName: rstudio-sg
@@ -289,9 +249,9 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource: !GetAtt OutputBucket.Arn
+                  - "s3:*"
+                Resource: 
+                  - '*'
   
   # roles
   LambdaEC2Role:
@@ -331,6 +291,7 @@ Resources:
       RoleName: !Sub "EC2InstancesIamRole-${AWS::Region}"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Ref PolicyArn
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -350,27 +311,7 @@ Resources:
       Targets:
         - Arn: !GetAtt AutoStopEC2Lambda.Arn
           Id: AutoStopEC2Lambda
-  Ec2StatusRule:
-    DependsOn:
-      - Ec2Topic
-    Type: AWS::Events::Rule
-    Properties:
-      Name : EC2StatusChange
-      Description: Eventbridge for Ec2 status change
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt Ec2Topic.TopicArn
-          Id: Ec2Topic
-      EventPattern:
-        source:
-          - aws.ec2
-        detail-type:
-          - "EC2 Instance State-change Notification"
-        detail:
-          - pending
-          - stopping
-          - shutting-down
-          - terminated
+ 
 
   # application load balancer
   EC2TargetGroup:
@@ -402,9 +343,9 @@ Resources:
       LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 80
       Protocol: HTTP
+
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    DependsOn: ALBSecurityGroup
     Properties:
       Scheme: internet-facing
       Subnets:
@@ -413,11 +354,8 @@ Resources:
       SecurityGroups:
         - !GetAtt ALBSecurityGroup.GroupId
 
-   S3VpcEndPoint:
+  S3VpcEndPoint:
     Type: AWS::EC2::VPCEndpoint
-    DependsOn:
-      - PrivateRouteTable
-      - PublicRouteTable
     Properties:
       VpcEndpointType: Gateway
       VpcId: !Ref VPC
@@ -430,8 +368,7 @@ Resources:
             Action:
               - 's3:*'
             Resource:
-              - !Ref InputBucketArn
-              - !Ref OutputBucketArn
+              - '*'
       RouteTableIds:
         - !Ref PrivateRouteTable
         - !Ref PublicRouteTable
@@ -443,6 +380,7 @@ Resources:
       InstanceProfileName: !Sub "EC2InstanceProfile-${AWS::Region}"
       Roles:
         - !Ref EC2InstancesIamRole
+
   EC2Instance:
     Type: AWS::EC2::Instance
     Properties:
@@ -465,8 +403,6 @@ Resources:
           Value: 4.4.1
         - Key: Rstudio version
           Value: 2024.04.2
-        - Key: KeyPair
-          Value: !Ref SshKeyPairName
         - Key: AutoStop
           Value: True
         - Key: O.S
@@ -492,9 +428,7 @@ Resources:
       FunctionName: !Sub "Autostop-Ec2-instance-${AWS::Region}"
       Runtime: python3.9
       MemorySize: 128
-      Role: !GetAtt
-        - LambdaEC2Role
-        - Arn
+      Role: !GetAtt LambdaEC2Role.Arn
       Handler: index.lambda_handler
       Timeout: 60
       Code:
