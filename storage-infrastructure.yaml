@@ -90,24 +90,6 @@ Resources:
                 Resource:
                   - !GetAtt InputBucket.Arn
 
-  Ec2Role:
-    DependsOn:
-      - IamManagedPolicyForEC2Instance
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "EC2Role-${AWS::Region}"
-      ManagedPolicyArns:
-        - !Ref IamManagedPolicyForEC2Instance
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - ec2.amazonaws.com
-            Action:
-              - "sts:AssumeRole"
-
   IamManagedPolicyForEC2Instance:
     Type: AWS::IAM::ManagedPolicy
     Properties:
