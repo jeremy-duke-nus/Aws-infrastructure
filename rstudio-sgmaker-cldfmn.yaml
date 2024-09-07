@@ -1,17 +1,19 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-  Aws infrastructure for r studio hosting on Ec2
+  Aws infrastructure for r studio hosting on Ec2. This is built in accordance with best practices, which 
+  uses NAT Gateway. The actual deployment uses an Ec2 to serve as a NAT instance. 
+  Ref: https://docs.aws.amazon.com/vpc/latest/userguide/work-with-nat-instances.html
    
   Written by - Jeremy Ng (Contact at jeremy.ng.w.k@sgh.com.sg/jeremy.ng.wk@duke-nus.edu.sg)
-  in consultation with Eugene Ng (contact at eugenelq@amazon.com).
+  in consultation with Eugene Ng (contact at eugenelq@amazon.cßom).
 
 Parameters:
   AnalysisBucketArn:
-    Description: Analysis bucket ARN. 
+    Description: Analysis bucket ARN.
     Type: String
     Default: arn:aws:s3:::analysis-ap-southeast-1-wkj24002
   InputBucketArn:
-    Description: Input bucket ARN. 
+    Description: Input bucket ARN.
     Type: String
     Default: arn:aws:s3:::inputs-ap-southeast-1-asadsdsf-wkj24002
   OutputBucketArn:
@@ -56,22 +58,22 @@ Parameters:
 Resources:
   # Vpc & networking
   VPC:
-    Type: 'AWS::EC2::VPC'
+    Type: "AWS::EC2::VPC"
     Properties:
-      CidrBlock: '10.0.0.0/16'
+      CidrBlock: "10.0.0.0/16"
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
         - Key: Name
           Value: Primary Vpc
   InternetGateway:
-    Type: 'AWS::EC2::InternetGateway'
+    Type: "AWS::EC2::InternetGateway"
     Properties:
       Tags:
         - Key: Name
           Value: IGW-primary
   AttachGateway:
-    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Type: "AWS::EC2::VPCGatewayAttachment"
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
@@ -79,94 +81,94 @@ Resources:
   # create the subnets - 2 private & 2 public subnets.
   # public subnets are associated with the internet gateway
   PublicSubnet1:
-    Type: 'AWS::EC2::Subnet'
+    Type: "AWS::EC2::Subnet"
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: '10.0.1.0/24'
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: "10.0.1.0/24"
+      AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: 'PublicSubnet1'
+          Value: "PublicSubnet1"
   PublicSubnet2:
-    Type: 'AWS::EC2::Subnet'
+    Type: "AWS::EC2::Subnet"
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: '10.0.2.0/24'
-      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: "10.0.2.0/24"
+      AvailabilityZone: !Select [1, !GetAZs ""]
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: 'PublicSubnet2'
+          Value: "PublicSubnet2"
   PrivateSubnet1:
-    Type: 'AWS::EC2::Subnet'
+    Type: "AWS::EC2::Subnet"
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: '10.0.3.0/24'
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: "10.0.3.0/24"
+      AvailabilityZone: !Select [0, !GetAZs ""]
       Tags:
         - Key: Name
-          Value: 'PrivateSubnet1'
+          Value: "PrivateSubnet1"
   PrivateSubnet2:
-    Type: 'AWS::EC2::Subnet'
+    Type: "AWS::EC2::Subnet"
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: '10.0.4.0/24'
-      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: "10.0.4.0/24"
+      AvailabilityZone: !Select [1, !GetAZs ""]
       Tags:
         - Key: Name
-          Value: 'PrivateSubnet2'
+          Value: "PrivateSubnet2"
 
   # nat gateway
   NatGatewayEIP:
-    Type: 'AWS::EC2::EIP'
+    Type: "AWS::EC2::EIP"
     Properties:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: 'PrimaryNatGatewayEIP'
+          Value: "PrimaryNatGatewayEIP"
   NatGateway:
-    Type: 'AWS::EC2::NatGateway'
+    Type: "AWS::EC2::NatGateway"
     Properties:
       AllocationId: !GetAtt NatGatewayEIP.AllocationId
       SubnetId: !Ref PublicSubnet1
       Tags:
         - Key: Name
-          Value: 'NatGateway'
+          Value: "NatGateway"
 
   # route tables & association of subnets with route tables
   PublicRouteTable:
-    Type: 'AWS::EC2::RouteTable'
+    Type: "AWS::EC2::RouteTable"
     Properties:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: 'PublicRouteTable'
+          Value: "PublicRouteTable"
   PrivateRouteTable:
-    Type: 'AWS::EC2::RouteTable'
+    Type: "AWS::EC2::RouteTable"
     Properties:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: 'PrivateRouteTable'
+          Value: "PrivateRouteTable"
 
   PublicSubnet1RouteTableAssociation:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
   PublicSubnet2RouteTableAssociation:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
   PrivateSubnet1RouteTableAssociation:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
       SubnetId: !Ref PrivateSubnet1
       RouteTableId: !Ref PrivateRouteTable
   PrivateSubnet2RouteTableAssociation:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
     Properties:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable
@@ -174,16 +176,16 @@ Resources:
   # private subnet routes to the nat gateway while public subnet routes
   # igw.
   PublicRoute:
-    Type: 'AWS::EC2::Route'
+    Type: "AWS::EC2::Route"
     Properties:
       RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: '0.0.0.0/0'
+      DestinationCidrBlock: "0.0.0.0/0"
       GatewayId: !Ref InternetGateway
   PrivateRoute:
-    Type: 'AWS::EC2::Route'
+    Type: "AWS::EC2::Route"
     Properties:
       RouteTableId: !Ref PrivateRouteTable
-      DestinationCidrBlock: '0.0.0.0/0'
+      DestinationCidrBlock: "0.0.0.0/0"
       NatGatewayId: !Ref NatGateway
 
   # security group
@@ -228,8 +230,8 @@ Resources:
         - Key: Name
           Value: rstudio-sg
       SecurityGroupIngress:
-           - IpProtocol: -1
-             SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+        - IpProtocol: -1
+          SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
 
   # user groups
   RstudioUsers:
@@ -246,13 +248,13 @@ Resources:
                   - ec2:DescribeInstances
                   - ec2:DescribeTags
                   - ec2:DescribeInstanceStatus
-                Resource: '*'
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - "s3:*"
-                Resource: 
-                  - '*'
-  
+                Resource:
+                  - "*"
+
   # roles
   LambdaEC2Role:
     Type: AWS::IAM::Role
@@ -264,7 +266,7 @@ Resources:
           - Effect: Allow
             Principal:
               Service:
-              - lambda.amazonaws.com
+                - lambda.amazonaws.com
             Action:
               - sts:AssumeRole
       ManagedPolicyArns:
@@ -276,15 +278,15 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                - ec2:StartInstances
-                - ec2:StopInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
                 Resource: arn:aws:ec2:*:*:instance/*
               - Effect: Allow
                 Action:
-                - ec2:DescribeInstances
-                - ec2:DescribeTags
-                - ec2:DescribeInstanceStatus
-                Resource: '*'
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                  - ec2:DescribeInstanceStatus
+                Resource: "*"
   EC2InstancesIamRole:
     Type: AWS::IAM::Role
     Properties:
@@ -297,21 +299,20 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-                Service: ec2.amazonaws.com
+              Service: ec2.amazonaws.com
             Action: sts:AssumeRole
-  
+
   # event bridge rules
   AutoStopEC2Rule:
     Type: AWS::Events::Rule
     Properties:
-      Name : EC2AutoStopEndOfDayRule
+      Name: EC2AutoStopEndOfDayRule
       Description: Auto Stop EC2 Instance (Mon-Fri 00:00 AM GMT)
       ScheduleExpression: cron(0 16 ? * MON-SUN *)
       State: ENABLED
       Targets:
         - Arn: !GetAtt AutoStopEC2Lambda.Arn
           Id: AutoStopEC2Lambda
- 
 
   # application load balancer
   EC2TargetGroup:
@@ -322,13 +323,13 @@ Resources:
       HealthCheckTimeoutSeconds: 15
       HealthyThresholdCount: 2
       Matcher:
-        HttpCode: '200'
+        HttpCode: "200"
       Name: EC2TargetGroup
       Port: 8787
       Protocol: HTTP
       TargetGroupAttributes:
-      - Key: deregistration_delay.timeout_seconds
-        Value: '20'
+        - Key: deregistration_delay.timeout_seconds
+          Value: "20"
       UnhealthyThresholdCount: 3
       VpcId: !Ref VPC
       Targets:
@@ -359,16 +360,16 @@ Resources:
     Properties:
       VpcEndpointType: Gateway
       VpcId: !Ref VPC
-      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
       PolicyDocument:
         Version: 2012-10-17
         Statement:
           - Effect: Allow
-            Principal: '*'
+            Principal: "*"
             Action:
-              - 's3:*'
+              - "s3:*"
             Resource:
-              - '*'
+              - "*"
       RouteTableIds:
         - !Ref PrivateRouteTable
         - !Ref PublicRouteTable
@@ -419,7 +420,7 @@ Resources:
       FunctionName: !GetAtt AutoStopEC2Lambda.Arn
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
-      SourceArn : !GetAtt AutoStopEC2Rule.Arn
+      SourceArn: !GetAtt AutoStopEC2Rule.Arn
 
   # lambda functions to start and stop EC2 instances
   AutoStopEC2Lambda:
@@ -433,41 +434,41 @@ Resources:
       Timeout: 60
       Code:
         ZipFile: |
-            import boto3
-            import logging
-            import os
+          import boto3
+          import logging
+          import os
 
-            logger = logging.getLogger()
-            logger.setLevel(logging.INFO)
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
 
-            region = os.environ['AWS_REGION']
-            ec2 = boto3.resource('ec2', region_name=region)
+          region = os.environ['AWS_REGION']
+          ec2 = boto3.resource('ec2', region_name=region)
 
-            def lambda_handler(event, context):
+          def lambda_handler(event, context):
 
-                filters = [
-                    {
-                        'Name': 'tag:AutoStop',
-                        'Values': ['TRUE','True','true']
-                    },
-                    {
-                        'Name': 'instance-state-name',
-                        'Values': ['running']
-                    }
-                ]
+              filters = [
+                  {
+                      'Name': 'tag:AutoStop',
+                      'Values': ['TRUE','True','true']
+                  },
+                  {
+                      'Name': 'instance-state-name',
+                      'Values': ['running']
+                  }
+              ]
 
-                instances = ec2.instances.filter(Filters=filters)
-                RunningInstances = [instance.id for instance in instances]
-                print("Running Instances with AutoStop Tag : " + str(RunningInstances))
+              instances = ec2.instances.filter(Filters=filters)
+              RunningInstances = [instance.id for instance in instances]
+              print("Running Instances with AutoStop Tag : " + str(RunningInstances))
 
-                if len(RunningInstances) > 0:
-                    for instance in instances:
-                        if instance.state['Name'] == 'running':
-                            print("Stopping Instance : " + instance.id)
-                    AutoStopping = ec2.instances.filter(InstanceIds=RunningInstances).stop()
-                    print("Stopped Instances : " + str(RunningInstances))
-                else:
-                    print("Instance not in Running state or AutoStop Tag not set...")
+              if len(RunningInstances) > 0:
+                  for instance in instances:
+                      if instance.state['Name'] == 'running':
+                          print("Stopping Instance : " + instance.id)
+                  AutoStopping = ec2.instances.filter(InstanceIds=RunningInstances).stop()
+                  print("Stopped Instances : " + str(RunningInstances))
+              else:
+                  print("Instance not in Running state or AutoStop Tag not set...")
       Description: >-
         Auto Stop EC2 Instance (from tag : AutoStop)
 
